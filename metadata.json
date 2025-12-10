@@ -1,0 +1,9 @@
+{
+  "name": "StreamFlow - Live Studio",
+  "description": "A TikTok-style live streaming interface with real-time camera recording, export capabilities, and AI-powered viewer simulation.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "display-capture"
+  ]
+}
