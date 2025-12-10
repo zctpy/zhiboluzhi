@@ -4,6 +4,7 @@ export interface ChatMessage {
   message: string;
   color: string;
   isSystem?: boolean;
+  isHost?: boolean;
 }
 
 export interface FloatingHeart {
