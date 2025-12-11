@@ -45,6 +45,7 @@ const App: React.FC = () => {
   const [recordedChunks, setRecordedChunks] = useState<Blob[]>([]);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [inputValue, setInputValue] = useState("");
+  const [fileName, setFileName] = useState("");
   
   // --- Refs ---
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -208,6 +209,12 @@ const App: React.FC = () => {
     setRecordedChunks([]);
     setDownloadUrl(null);
     
+    // Generate clean filename
+    const now = new Date();
+    const pad = (n: number) => n.toString().padStart(2, '0');
+    const timeStr = `${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+    setFileName(`直播录像_${timeStr}.webm`);
+
     // Direct Stream Recording - Most stable method
     const streamToRecord = streamRef.current;
 
@@ -266,7 +273,7 @@ const App: React.FC = () => {
          timerRef.current = null;
       }
       if (recorder) {
-        addChatMessage("系统", "录制已停止 (修复)。", true);
+        addChatMessage("系统", "录制已停止。", true);
       }
     }
   }, []);
@@ -383,47 +390,11 @@ const App: React.FC = () => {
         )}
 
         {/* UI Overlay Layer */}
-        <div className="absolute inset-0 z-10 flex flex-col justify-between p-4 bg-gradient-to-b from-black/40 via-transparent to-black/60 pointer-events-none">
+        {/* Removed "from-black/40" top gradient for cleaner preview */}
+        <div className="absolute inset-0 z-10 flex flex-col justify-between p-4 bg-gradient-to-t from-black/60 to-transparent pointer-events-none">
           
-          {/* Header */}
-          <div className="flex justify-between items-start pointer-events-auto mt-2">
-            {/* User Profile */}
-            <div className="flex items-center space-x-2 bg-black/20 backdrop-blur-md rounded-full p-1 pr-4 border border-white/10">
-              <div className="relative">
-                <img 
-                  src="https://picsum.photos/100/100" 
-                  alt="Profile" 
-                  className="w-8 h-8 rounded-full border border-[#FF0055]"
-                />
-                <div className="absolute -bottom-1 -right-1 bg-[#FF0055] rounded-full p-0.5">
-                  <div className="w-2 h-2 bg-white rounded-full animate-pulse"></div>
-                </div>
-              </div>
-              <div className="flex flex-col">
-                <span className="text-xs font-bold text-white leading-tight">直播达人</span>
-                <span className="text-[10px] text-gray-300 leading-tight">ID: 888888</span>
-              </div>
-              <button className="bg-[#FF0055] text-white text-xs font-bold px-3 py-1 rounded-full hover:bg-red-600 transition ml-1">
-                关注
-              </button>
-            </div>
-
-            {/* Viewer Count & Heat */}
-            <div className="flex flex-col items-end space-y-1">
-               <div className="flex items-center space-x-3">
-                <div className="flex items-center space-x-1 bg-black/20 backdrop-blur-md px-3 py-1 rounded-full border border-white/10">
-                    <User size={12} className="text-white/80" />
-                    <span className="text-xs font-bold">{viewerCount}</span>
-                </div>
-                <button className="p-1 rounded-full bg-black/20 backdrop-blur-md hover:bg-black/40">
-                    <X size={20} className="text-white" />
-                </button>
-               </div>
-               <div className="flex items-center space-x-1 bg-gradient-to-r from-orange-500/80 to-red-500/80 backdrop-blur-md px-2 py-0.5 rounded-full shadow-lg">
-                    <Flame size={10} className="text-yellow-200 fill-yellow-200" />
-                    <span className="text-[10px] font-bold text-white">{heatCount}w</span>
-               </div>
-            </div>
+          {/* Header area (Spacer) */}
+          <div className="flex justify-between items-start pointer-events-auto mt-2 h-10">
           </div>
 
           {/* Right Sidebar Actions */}
@@ -540,7 +511,7 @@ const App: React.FC = () => {
                 <div className="flex items-center space-x-2">
                    <a 
                     href={downloadUrl} 
-                    download={`stream-recording-${Date.now()}.webm`}
+                    download={fileName || "video.webm"}
                     className="flex items-center justify-center h-10 px-4 bg-green-500 rounded-full font-bold text-sm hover:bg-green-600 transition shadow-lg shadow-green-500/30"
                    >
                      <Download size={16} className="mr-2"/> 保存
