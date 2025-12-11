@@ -51,6 +51,7 @@ const App: React.FC = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null); // Source stream (Cam/Screen)
+  const audioContextRef = useRef<AudioContext | null>(null); // For mixing audio
   const timerRef = useRef<number | null>(null);
 
   // --- Initialization ---
@@ -83,18 +84,24 @@ const App: React.FC = () => {
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
     }
+    if (audioContextRef.current) {
+      audioContextRef.current.close().catch(console.error);
+      audioContextRef.current = null;
+    }
   };
 
   const initCamera = async () => {
     try {
       if (streamStatus === 'recording') stopRecording();
 
+      // Clean up previous stream/context BEFORE getting new camera stream
+      cleanupStream();
+
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: 'user', width: { ideal: 1080 }, height: { ideal: 1920 } },
         audio: true
       });
       
-      cleanupStream();
       updateStream(stream);
       setIsScreenSharing(false);
       setHasPermissions(true);
@@ -115,7 +122,7 @@ const App: React.FC = () => {
 
     try {
       // Prompt user instructions
-      addChatMessage("系统", "请选择'整个屏幕'并勾选'分享系统音频'以获得最佳效果。", true);
+      addChatMessage("系统", "提示：为了录制AI声音，请选择'Chrome标签页'并勾选'分享音频'。", true);
 
       // 1. Get Display Stream (Video + System Audio)
       const displayStream = await navigator.mediaDevices.getDisplayMedia({ 
@@ -129,7 +136,8 @@ const App: React.FC = () => {
         audioStream = await navigator.mediaDevices.getUserMedia({ 
             audio: {
                 echoCancellation: true,
-                noiseSuppression: true
+                noiseSuppression: true,
+                autoGainControl: true
             } 
         });
       } catch (audioErr) {
@@ -137,12 +145,53 @@ const App: React.FC = () => {
         addChatMessage("系统", "无法访问麦克风，仅共享屏幕画面。", true);
       }
 
-      // 3. Merge Tracks: Video + System Audio + Mic Audio
-      const tracks = [
-        ...displayStream.getVideoTracks(),
-        ...displayStream.getAudioTracks(), // System Audio
-        ...(audioStream ? audioStream.getAudioTracks() : []) // Mic Audio
-      ];
+      // 3. Prepare tracks & Audio Mixing
+      // Clean up OLD stream/context before setting up the new mixed one
+      cleanupStream();
+
+      const tracks = [...displayStream.getVideoTracks()];
+      const sysAudioTracks = displayStream.getAudioTracks();
+      const micAudioTracks = audioStream ? audioStream.getAudioTracks() : [];
+
+      // Check if system audio is missing
+      if (sysAudioTracks.length === 0) {
+        addChatMessage("系统", "⚠️ 警告：未检测到系统声音。请确认您勾选了'分享音频' (建议分享标签页)。", true);
+      }
+
+      // If we have BOTH system audio and mic audio, we must mix them.
+      // Browsers often only record the first audio track if multiple are present in a MediaStream.
+      if (sysAudioTracks.length > 0 && micAudioTracks.length > 0) {
+          const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+          const ctx = new AudioContextClass();
+          
+          // CRITICAL: Resume context to ensure it's not suspended (common browser policy)
+          if (ctx.state === 'suspended') {
+            await ctx.resume();
+          }
+          
+          audioContextRef.current = ctx;
+          const dest = ctx.createMediaStreamDestination();
+
+          // Create sources
+          const sysSource = ctx.createMediaStreamSource(new MediaStream([sysAudioTracks[0]]));
+          const micSource = ctx.createMediaStreamSource(new MediaStream([micAudioTracks[0]]));
+
+          // Create Gain Nodes (Volume Control) - helps stabilize the graph
+          const sysGain = ctx.createGain();
+          const micGain = ctx.createGain();
+          
+          // Connect Graph: Source -> Gain -> Destination
+          sysSource.connect(sysGain).connect(dest);
+          micSource.connect(micGain).connect(dest);
+
+          // Add the MIXED audio track
+          tracks.push(dest.stream.getAudioTracks()[0]);
+      } else {
+          // Fallback: If only one source exists, just add what we have
+          if (sysAudioTracks.length > 0) tracks.push(sysAudioTracks[0]);
+          if (micAudioTracks.length > 0) tracks.push(micAudioTracks[0]);
+      }
+
       const combinedStream = new MediaStream(tracks);
 
       // Handle Stop Sharing via Browser UI
@@ -153,7 +202,6 @@ const App: React.FC = () => {
         initCamera(); // Fallback to camera
       };
 
-      cleanupStream();
       updateStream(combinedStream);
       setIsScreenSharing(true);
       setCameraEnabled(true);
@@ -213,7 +261,7 @@ const App: React.FC = () => {
     const now = new Date();
     const pad = (n: number) => n.toString().padStart(2, '0');
     const timeStr = `${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
-    setFileName(`直播录像_${timeStr}.webm`);
+    setFileName(`${timeStr}.webm`);
 
     // Direct Stream Recording - Most stable method
     const streamToRecord = streamRef.current;
@@ -393,6 +441,21 @@ const App: React.FC = () => {
         {/* Removed "from-black/40" top gradient for cleaner preview */}
         <div className="absolute inset-0 z-10 flex flex-col justify-between p-4 bg-gradient-to-t from-black/60 to-transparent pointer-events-none">
           
+          {/* Top Recording Indicator */}
+          {streamStatus === 'recording' && (
+            <div className="absolute top-6 left-1/2 transform -translate-x-1/2 flex items-center space-x-2 bg-red-600/90 backdrop-blur-md px-4 py-1.5 rounded-full z-50 animate-pulse shadow-lg shadow-red-600/20">
+              <div className="w-3 h-3 bg-white rounded-full"></div>
+              <span className="text-white font-bold tracking-widest text-sm">REC</span>
+            </div>
+          )}
+
+           {/* Floating Bottom Right Timer */}
+          {streamStatus === 'recording' && (
+             <div className="absolute bottom-32 right-20 bg-black/40 backdrop-blur-md px-3 py-1.5 rounded-lg border border-white/10 z-20">
+                <span className="text-white font-mono font-bold text-lg tracking-wider">{formatTime(elapsedTime)}</span>
+             </div>
+          )}
+
           {/* Header area (Spacer) */}
           <div className="flex justify-between items-start pointer-events-auto mt-2 h-10">
           </div>
@@ -496,10 +559,7 @@ const App: React.FC = () => {
 
               {streamStatus === 'recording' ? (
                 <div className="flex items-center space-x-2">
-                   <div className="flex items-center bg-red-500/20 backdrop-blur-md border border-red-500/50 rounded-full px-3 py-1 h-10">
-                     <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse mr-2"></div>
-                     <span className="text-white font-mono text-sm">{formatTime(elapsedTime)}</span>
-                   </div>
+                   {/* Removed embedded timer here to reduce redundancy, keeping Stop button */}
                    <button 
                     onClick={stopRecording}
                     className="w-10 h-10 flex items-center justify-center bg-red-600 rounded-full hover:bg-red-700 active:scale-95 transition shadow-lg shadow-red-600/40"
