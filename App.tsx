@@ -18,8 +18,7 @@ import {
   MonitorUp,
   RefreshCw,
   Send,
-  Flame,
-  Wand2 // Icon for Filters
+  Flame
 } from 'lucide-react';
 import { LiveChat } from './components/LiveChat';
 import { FloatingHearts } from './components/FloatingHearts';
@@ -29,15 +28,6 @@ import { ChatMessage, FloatingHeart, StreamStatus } from './types';
 // Constants
 const VIEWER_COLORS = ['#FF0055', '#00F0FF', '#00FF7F', '#FFD700', '#FF8C00', '#DA70D6', '#FFFFFF'];
 const RANDOM_USERNAMES = ['小明', '阿杰', '茜茜', '大伟', '安娜', '子轩', '小美', '老张', 'Cathy', 'Tom', '想飞的鱼', '快乐星球'];
-
-// Filter Definitions
-const FILTERS = [
-  { name: '原图', filter: 'none', color: 'bg-white' },
-  { name: '复古', filter: 'sepia(0.6) contrast(1.1)', color: 'bg-amber-700' },
-  { name: '黑白', filter: 'grayscale(1)', color: 'bg-gray-700' },
-  { name: '鲜艳', filter: 'saturate(1.8) contrast(1.1)', color: 'bg-rose-500' },
-  { name: '冷感', filter: 'saturate(0.5) brightness(1.1) contrast(0.9)', color: 'bg-blue-300' },
-];
 
 const App: React.FC = () => {
   // --- State ---
@@ -56,18 +46,11 @@ const App: React.FC = () => {
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [inputValue, setInputValue] = useState("");
   
-  // Filter State
-  const [currentFilterIndex, setCurrentFilterIndex] = useState(0);
-  const [showFilterMenu, setShowFilterMenu] = useState(false);
-
   // --- Refs ---
   const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null); // Main display & recording source
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null); // Source stream (Cam/Screen)
   const timerRef = useRef<number | null>(null);
-  const animationFrameRef = useRef<number>();
-  const filterRef = useRef(FILTERS[0].filter); // Ref to avoid closure staleness in loop
 
   // --- Initialization ---
   useEffect(() => {
@@ -91,46 +74,9 @@ const App: React.FC = () => {
     return () => {
       cleanupStream();
       clearInterval(ambientInterval);
-      if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // Update filter ref when state changes
-  useEffect(() => {
-    filterRef.current = FILTERS[currentFilterIndex].filter;
-  }, [currentFilterIndex]);
-
-  // --- Canvas Drawing Loop ---
-  const drawFrame = useCallback(() => {
-    if (videoRef.current && canvasRef.current) {
-        const video = videoRef.current;
-        const canvas = canvasRef.current;
-        const ctx = canvas.getContext('2d', { willReadFrequently: false });
-
-        if (ctx && video.readyState >= video.HAVE_CURRENT_DATA) {
-            // Check if resolution changed (e.g. switch to screen share)
-            if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
-                canvas.width = video.videoWidth || 1080;
-                canvas.height = video.videoHeight || 1920;
-            }
-
-            // Draw with filter
-            ctx.filter = filterRef.current;
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        }
-    }
-    animationFrameRef.current = requestAnimationFrame(drawFrame);
-  }, []);
-
-  // Start the drawing loop once
-  useEffect(() => {
-    animationFrameRef.current = requestAnimationFrame(drawFrame);
-    return () => {
-        if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
-    }
-  }, [drawFrame]);
-
 
   const cleanupStream = () => {
     if (streamRef.current) {
@@ -167,28 +113,43 @@ const App: React.FC = () => {
     }
 
     try {
-      const displayStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+      // Prompt user instructions
+      addChatMessage("系统", "请选择'整个屏幕'并勾选'分享系统音频'以获得最佳效果。", true);
+
+      // 1. Get Display Stream (Video + System Audio)
+      const displayStream = await navigator.mediaDevices.getDisplayMedia({ 
+          video: true, 
+          audio: true // Request system audio
+      });
       
-      // Fallback audio
+      // 2. Get Mic Audio separately
       let audioStream: MediaStream | null = null;
       try {
-        audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        audioStream = await navigator.mediaDevices.getUserMedia({ 
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true
+            } 
+        });
       } catch (audioErr) {
         console.warn("Mic access failed during screen share:", audioErr);
         addChatMessage("系统", "无法访问麦克风，仅共享屏幕画面。", true);
       }
 
+      // 3. Merge Tracks: Video + System Audio + Mic Audio
       const tracks = [
         ...displayStream.getVideoTracks(),
-        ...(audioStream ? audioStream.getAudioTracks() : [])
+        ...displayStream.getAudioTracks(), // System Audio
+        ...(audioStream ? audioStream.getAudioTracks() : []) // Mic Audio
       ];
       const combinedStream = new MediaStream(tracks);
 
+      // Handle Stop Sharing via Browser UI
       displayStream.getVideoTracks()[0].onended = () => {
         if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
             stopRecording();
         }
-        initCamera();
+        initCamera(); // Fallback to camera
       };
 
       cleanupStream();
@@ -210,11 +171,11 @@ const App: React.FC = () => {
 
   const updateStream = (stream: MediaStream) => {
     streamRef.current = stream;
-    // We attach stream to hidden video element, canvas draws it
     if (videoRef.current) {
       videoRef.current.srcObject = stream;
     }
-    setMicEnabled(stream.getAudioTracks().some(t => t.enabled));
+    // Update mic status based on presence of ANY audio track
+    setMicEnabled(stream.getAudioTracks().length > 0);
   };
 
   const toggleSource = () => {
@@ -232,13 +193,14 @@ const App: React.FC = () => {
     }
     const success = await startScreenShare();
     if (success) {
-        setTimeout(() => startRecording(), 800);
+        // Wait longer for full-screen switch
+        setTimeout(() => startRecording(), 1000);
     }
   };
 
-  // --- Recording Logic (Using Canvas Stream) ---
+  // --- Recording Logic ---
   const startRecording = useCallback(() => {
-    if (!canvasRef.current || !streamRef.current) {
+    if (!streamRef.current) {
         console.error("No stream to record");
         return;
     }
@@ -246,12 +208,8 @@ const App: React.FC = () => {
     setRecordedChunks([]);
     setDownloadUrl(null);
     
-    // 1. Capture stream from CANVAS (includes filters)
-    const canvasStream = canvasRef.current.captureStream(30); // 30 FPS
-    
-    // 2. Add Audio Tracks from original source
-    const audioTracks = streamRef.current.getAudioTracks();
-    audioTracks.forEach(track => canvasStream.addTrack(track));
+    // Direct Stream Recording - Most stable method
+    const streamToRecord = streamRef.current;
 
     const options: MediaRecorderOptions = {};
     if (MediaRecorder.isTypeSupported('video/webm;codecs=vp9')) {
@@ -263,7 +221,7 @@ const App: React.FC = () => {
     }
     
     try {
-        const recorder = new MediaRecorder(canvasStream, options);
+        const recorder = new MediaRecorder(streamToRecord, options);
 
         recorder.ondataavailable = (event) => {
             if (event.data && event.data.size > 0) {
@@ -277,7 +235,7 @@ const App: React.FC = () => {
                 clearInterval(timerRef.current);
                 timerRef.current = null;
             }
-            addChatMessage("系统", "录制已完成，已保存滤镜效果。", true);
+            addChatMessage("系统", "录制已完成。", true);
         };
 
         recorder.start(1000);
@@ -290,12 +248,12 @@ const App: React.FC = () => {
             setElapsedTime(prev => prev + 1);
         }, 1000);
 
-        addChatMessage("系统", "开始录制 (包含滤镜)...", true);
+        addChatMessage("系统", "开始录制...", true);
     } catch (e) {
         console.error("Failed to start recorder", e);
         addChatMessage("系统", "无法开始录制，请检查浏览器支持。", true);
     }
-  }, []);
+  }, []); // Stable dependency
 
   const stopRecording = useCallback(() => {
     const recorder = mediaRecorderRef.current;
@@ -409,20 +367,13 @@ const App: React.FC = () => {
       {/* Mobile Wrapper */}
       <div className="relative w-full max-w-md h-[100dvh] bg-black overflow-hidden shadow-2xl md:rounded-3xl border-neutral-800 md:border-4">
         
-        {/* Hidden Video Source */}
+        {/* Main Video Display (Direct) */}
         <video 
           ref={videoRef}
           autoPlay 
           playsInline 
           muted 
-          className="absolute inset-0 w-1 h-1 opacity-0 pointer-events-none" 
-        />
-        
-        {/* Canvas Display (Visible & Filtered) */}
-        <canvas 
-           ref={canvasRef}
-           className={`absolute inset-0 w-full h-full transition-opacity duration-300 ${cameraEnabled ? 'opacity-100' : 'opacity-0'} ${isScreenSharing ? 'object-contain bg-gray-900' : 'object-cover'}`}
-           style={{ objectFit: isScreenSharing ? 'contain' : 'cover' }}
+          className={`absolute inset-0 w-full h-full transition-opacity duration-300 ${cameraEnabled ? 'opacity-100' : 'opacity-0'} ${isScreenSharing ? 'object-contain bg-gray-900' : 'object-cover'}`}
         />
 
         {!cameraEnabled && (
@@ -478,17 +429,7 @@ const App: React.FC = () => {
           {/* Right Sidebar Actions */}
           <div className="absolute right-4 bottom-24 flex flex-col items-center space-y-4 pointer-events-auto">
              
-             {/* Filter Toggle */}
-             <div className="flex flex-col items-center space-y-1">
-                <button 
-                  onClick={() => setShowFilterMenu(!showFilterMenu)}
-                  className={`p-3 backdrop-blur-md rounded-full active:scale-95 transition ${showFilterMenu ? 'bg-purple-600 hover:bg-purple-500' : 'bg-black/20 hover:bg-black/40'}`}
-                >
-                  <Wand2 size={28} />
-                </button>
-                <span className="text-[10px] font-medium shadow-black drop-shadow-md text-white/90">滤镜</span>
-             </div>
-
+             {/* One-Click Screen Record */}
              <div className="flex flex-col items-center space-y-1">
                 <button 
                    onClick={handleScreenRecord}
@@ -553,29 +494,9 @@ const App: React.FC = () => {
              </div>
           </div>
 
-          {/* Bottom Area: Filter Menu & Chat */}
+          {/* Bottom Area: Chat */}
           <div className="flex flex-col space-y-2 mb-2 pointer-events-auto w-full">
             
-            {/* Filter Menu Overlay */}
-            {showFilterMenu && (
-              <div className="mb-2 mx-2 p-3 bg-black/60 backdrop-blur-xl rounded-2xl overflow-x-auto no-scrollbar border border-white/10 animate-in slide-in-from-bottom-5 fade-in duration-300">
-                <div className="flex space-x-4">
-                  {FILTERS.map((filter, index) => (
-                    <button
-                      key={filter.name}
-                      onClick={() => setCurrentFilterIndex(index)}
-                      className="flex flex-col items-center space-y-1 min-w-[50px]"
-                    >
-                      <div className={`w-12 h-12 rounded-full border-2 ${currentFilterIndex === index ? 'border-[#FF0055] scale-110' : 'border-transparent opacity-70'} transition duration-200 overflow-hidden`}>
-                         <div className={`w-full h-full ${filter.color}`} style={{ filter: filter.filter }}></div>
-                      </div>
-                      <span className={`text-[10px] ${currentFilterIndex === index ? 'text-white font-bold' : 'text-gray-400'}`}>{filter.name}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-
             {/* Chat Overlay */}
             <div className="relative w-full">
                <LiveChat messages={chatMessages} />
